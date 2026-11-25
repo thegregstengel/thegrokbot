@@ -8,10 +8,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use config::Config;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::{watch, Semaphore};
 use tracing::{error, info, warn};
 
 const MDNS_SERVICE_TYPE: &str = "_grokbot._tcp.local.";
+/// Caps concurrent in-flight handshakes to prevent unauthenticated connection floods.
+const MAX_CONCURRENT_HANDSHAKES: usize = 4;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,6 +31,20 @@ async fn main() -> Result<()> {
     let cfg = Config::parse();
     if cfg.xai_api_key.trim().is_empty() {
         anyhow::bail!("XAI_API_KEY is empty. Pass --xai-api-key or set XAI_API_KEY.");
+    }
+
+    let auth_enabled = !cfg.auth_token.trim().is_empty();
+    if !auth_enabled {
+        if !cfg.allow_unauthenticated {
+            anyhow::bail!(
+                "GROKBOT_AUTH_TOKEN is empty. Set a shared pairing token (or pass \
+                 --allow-unauthenticated on a strictly private LAN)."
+            );
+        }
+        warn!(
+            "Running WITHOUT Body authentication (--allow-unauthenticated). \
+             Any device on this network can use your XAI_API_KEY."
+        );
     }
 
     let _mdns_guard = if cfg.mdns {
@@ -49,18 +67,33 @@ async fn main() -> Result<()> {
         listen = %cfg.listen,
         model = %cfg.model,
         voice = %cfg.voice,
+        auth = auth_enabled,
+        log_transcripts = cfg.log_transcripts,
         "GrokBot Brain listening for ESP-VoCat connections"
     );
 
+    let handshake_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
+    let (active_gen_tx, _active_gen_rx) = watch::channel::<u64>(0);
+    let active_gen_tx = Arc::new(active_gen_tx);
+
     loop {
         let (socket, peer) = listener.accept().await?;
+        let Ok(permit) = handshake_sem.clone().try_acquire_owned() else {
+            warn!(peer = %peer, "rejecting connection: too many concurrent handshakes");
+            drop(socket);
+            continue;
+        };
+
         let _ = socket.set_nodelay(true);
         let peer_label = peer.to_string();
         let cfg_clone = cfg.clone();
+        let gen_tx = active_gen_tx.clone();
         info!(peer = %peer_label, "accepted TCP connection");
 
         tokio::spawn(async move {
-            if let Err(e) = session::handle_body_stream(socket, peer_label.clone(), cfg_clone).await
+            if let Err(e) =
+                session::handle_body_stream(socket, peer_label.clone(), cfg_clone, gen_tx, permit)
+                    .await
             {
                 error!(peer = %peer_label, "session error: {e}");
             }

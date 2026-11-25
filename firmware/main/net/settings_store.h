@@ -13,6 +13,7 @@ typedef struct {
     char wifi_ssid[33];
     char wifi_password[65];
     char brain_host[64]; /* Empty = discover _grokbot._tcp via mDNS */
+    char auth_token[65]; /* Shared HMAC-SHA256 pairing token with grokbot-brain */
     uint16_t brain_port;
     int volume;
     int brightness;

@@ -26,15 +26,18 @@ Create a local `secrets.env` file (gitignored) from the example template:
 cp secrets.env.example secrets.env
 ```
 
-Edit `secrets.env` and set your `XAI_API_KEY`. Then build and run
+Edit `secrets.env` and set your `XAI_API_KEY` plus a random pairing secret for
+`GROKBOT_AUTH_TOKEN` (for example, `openssl rand -hex 24`). Then build and run
 `grokbot-brain`:
 
 ```bash
 ./scripts/run_brain.sh
 ```
 
-By default, `grokbot-brain` listens on `0.0.0.0:8765` and advertises
-`_grokbot._tcp.local.` via mDNS so the ESP-VoCat discovers it automatically.
+By default, `grokbot-brain` listens on `0.0.0.0:8765`, enforces mutual
+HMAC-SHA256 authentication, suppresses voice transcripts from `INFO` logs, and
+advertises `_grokbot._tcp.local.` via mDNS so the ESP-VoCat discovers it
+automatically.
 
 You can pass extra CLI flags directly to `./scripts/run_brain.sh`:
 
@@ -43,6 +46,7 @@ You can pass extra CLI flags directly to `./scripts/run_brain.sh`:
   --voice eve \
   --model grok-voice-latest \
   --reasoning-effort none \
+  --log-transcripts \
   --web-search \
   --x-search
 ```
@@ -87,17 +91,18 @@ To bake Wi-Fi credentials or a static Brain IP into the build instead of using
 SoftAP or mDNS, run `idf.py menuconfig` inside `firmware/` and open
 **GrokBot Body Configuration**.
 
-## Step 4: Connect Wi-Fi
+## Step 4: Connect Wi-Fi and pair
 
 If Wi-Fi credentials are not stored in NVS or `menuconfig`:
 
-1. Join the `GrokBot-Setup` Wi-Fi access point from your phone or laptop.
+1. Join the `GrokBot-Setup` WPA2 access point using the random 8-digit PIN
+   displayed on the GrokBot screen (and printed to serial).
 2. Open `http://192.168.4.1`.
-3. Enter your Wi-Fi SSID and password (leave Brain IP blank to use mDNS
-   auto-discovery, or enter your Brain host's LAN IP).
+3. Enter your Wi-Fi SSID, Wi-Fi password, and `GROKBOT_AUTH_TOKEN` (leave Brain
+   IP blank to use mDNS auto-discovery, or enter your Brain host's LAN IP).
 4. Save and wait for GrokBot to reboot.
 
-No API keys are entered on or stored on the ESP-VoCat.
+No xAI API keys are entered on or stored on the ESP-VoCat.
 
 ## Controls
 

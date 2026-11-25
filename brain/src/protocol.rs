@@ -1,4 +1,5 @@
 use bytes::{BufMut, BytesMut};
+use ring::hmac;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -6,6 +7,8 @@ pub const FRAME_MAGIC: [u8; 2] = [0x47, 0x42]; // "GB"
 pub const HEADER_LEN: usize = 6;
 pub const MAX_PAYLOAD_LEN: usize = 4096;
 pub const PROTO_VERSION: u8 = 1;
+pub const AUTH_NONCE_LEN: usize = 16;
+pub const AUTH_HMAC_LEN: usize = 32;
 
 // Body -> Brain message types
 pub const MSG_HELLO: u8 = 0x01;
@@ -14,6 +17,7 @@ pub const MSG_WAKE: u8 = 0x03;
 pub const MSG_BARGE_IN: u8 = 0x04;
 pub const MSG_SLEEP: u8 = 0x05;
 pub const MSG_PING: u8 = 0x06;
+pub const MSG_AUTH_RESPONSE: u8 = 0x07;
 
 // Brain -> Body message types
 pub const MSG_WELCOME: u8 = 0x81;
@@ -22,6 +26,41 @@ pub const MSG_FACE_STATE: u8 = 0x83;
 pub const MSG_STOP_AUDIO: u8 = 0x84;
 pub const MSG_CONFIG: u8 = 0x85;
 pub const MSG_PONG: u8 = 0x86;
+pub const MSG_AUTH_CHALLENGE: u8 = 0x87;
+
+/// Computes HMAC-SHA256(token, domain || nonce_brain || nonce_body).
+pub fn compute_auth_mac(
+    token: &str,
+    domain: &[u8],
+    nonce_brain: &[u8; AUTH_NONCE_LEN],
+    nonce_body: &[u8; AUTH_NONCE_LEN],
+) -> [u8; AUTH_HMAC_LEN] {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes());
+    let mut ctx = hmac::Context::with_key(&key);
+    ctx.update(domain);
+    ctx.update(nonce_brain);
+    ctx.update(nonce_body);
+    let tag = ctx.sign();
+    let mut out = [0u8; AUTH_HMAC_LEN];
+    out.copy_from_slice(tag.as_ref());
+    out
+}
+
+/// Verifies HMAC-SHA256(token, domain || nonce_brain || nonce_body) in constant time.
+pub fn verify_auth_mac(
+    token: &str,
+    domain: &[u8],
+    nonce_brain: &[u8; AUTH_NONCE_LEN],
+    nonce_body: &[u8; AUTH_NONCE_LEN],
+    received: &[u8; AUTH_HMAC_LEN],
+) -> bool {
+    let key = hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes());
+    let mut msg = Vec::with_capacity(domain.len() + AUTH_NONCE_LEN * 2);
+    msg.extend_from_slice(domain);
+    msg.extend_from_slice(nonce_brain);
+    msg.extend_from_slice(nonce_body);
+    hmac::verify(&key, &msg, received).is_ok()
+}
 
 /// Mirrors `face_emotion_t` in firmware/main/ui/face/face.h
 #[repr(u8)]
@@ -75,6 +114,10 @@ pub enum BodyMessage {
         caps_flags: u8,
         device_id: String,
     },
+    AuthResponse {
+        nonce_body: [u8; AUTH_NONCE_LEN],
+        hmac_body: [u8; AUTH_HMAC_LEN],
+    },
     AudioUp(Vec<u8>),
     Wake {
         source: WakeSource,
@@ -91,9 +134,13 @@ pub enum BodyMessage {
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrainMessage {
+    AuthChallenge {
+        nonce_brain: [u8; AUTH_NONCE_LEN],
+    },
     Welcome {
         proto_version: u8,
         sample_rate_khz: u8,
+        hmac_brain: Option<[u8; AUTH_HMAC_LEN]>,
     },
     AudioDown(Vec<u8>),
     FaceState {
@@ -141,10 +188,22 @@ pub fn encode_raw(msg_type: u8, flags: u8, payload: &[u8]) -> Result<Vec<u8>, Pr
 
 pub fn encode_brain_message(msg: &BrainMessage) -> Result<Vec<u8>, ProtocolError> {
     match msg {
+        BrainMessage::AuthChallenge { nonce_brain } => encode_raw(MSG_AUTH_CHALLENGE, 1, nonce_brain),
         BrainMessage::Welcome {
             proto_version,
             sample_rate_khz,
-        } => encode_raw(MSG_WELCOME, 0, &[*proto_version, *sample_rate_khz]),
+            hmac_brain,
+        } => {
+            if let Some(mac) = hmac_brain {
+                let mut payload = Vec::with_capacity(2 + AUTH_HMAC_LEN);
+                payload.push(*proto_version);
+                payload.push(*sample_rate_khz);
+                payload.extend_from_slice(mac);
+                encode_raw(MSG_WELCOME, 0, &payload)
+            } else {
+                encode_raw(MSG_WELCOME, 0, &[*proto_version, *sample_rate_khz])
+            }
+        }
         BrainMessage::AudioDown(pcm) => encode_raw(MSG_AUDIO_DOWN, 0, pcm),
         BrainMessage::FaceState {
             emotion,
@@ -182,6 +241,22 @@ pub fn decode_body_message(msg_type: u8, payload: Vec<u8>) -> Result<BodyMessage
                 channels: payload[2],
                 caps_flags: payload[3],
                 device_id,
+            })
+        }
+        MSG_AUTH_RESPONSE => {
+            if payload.len() != AUTH_NONCE_LEN + AUTH_HMAC_LEN {
+                return Err(ProtocolError::MalformedPayload(
+                    MSG_AUTH_RESPONSE,
+                    "expected 16-byte nonce + 32-byte HMAC",
+                ));
+            }
+            let mut nonce_body = [0u8; AUTH_NONCE_LEN];
+            let mut hmac_body = [0u8; AUTH_HMAC_LEN];
+            nonce_body.copy_from_slice(&payload[..AUTH_NONCE_LEN]);
+            hmac_body.copy_from_slice(&payload[AUTH_NONCE_LEN..]);
+            Ok(BodyMessage::AuthResponse {
+                nonce_body,
+                hmac_body,
             })
         }
         MSG_AUDIO_UP => Ok(BodyMessage::AudioUp(payload)),
@@ -315,5 +390,15 @@ mod tests {
             read_body_message(&mut oversize).await,
             Err(ProtocolError::PayloadTooLarge(_))
         ));
+    }
+
+    #[test]
+    fn hmac_auth_verify_roundtrip() {
+        let nb = [1u8; AUTH_NONCE_LEN];
+        let nd = [2u8; AUTH_NONCE_LEN];
+        let mac = compute_auth_mac("super-secret-token", b"GB1-BODY", &nb, &nd);
+        assert!(verify_auth_mac("super-secret-token", b"GB1-BODY", &nb, &nd, &mac));
+        assert!(!verify_auth_mac("wrong-token", b"GB1-BODY", &nb, &nd, &mac));
+        assert!(!verify_auth_mac("super-secret-token", b"GB1-BRAIN", &nb, &nd, &mac));
     }
 }

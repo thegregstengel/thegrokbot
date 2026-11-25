@@ -14,6 +14,18 @@ pub struct Config {
     #[arg(long, env = "GROKBOT_LISTEN", default_value = "0.0.0.0:8765")]
     pub listen: SocketAddr,
 
+    /// Shared pairing token for mutual HMAC-SHA256 authentication with the Body
+    #[arg(long, env = "GROKBOT_AUTH_TOKEN", default_value = "")]
+    pub auth_token: String,
+
+    /// Explicitly allow unauthenticated Body connections (not recommended on shared LANs)
+    #[arg(long, env = "GROKBOT_ALLOW_UNAUTHENTICATED", default_value_t = false)]
+    pub allow_unauthenticated: bool,
+
+    /// Log full user and assistant voice transcripts at INFO level
+    #[arg(long, env = "GROKBOT_LOG_TRANSCRIPTS", default_value_t = false)]
+    pub log_transcripts: bool,
+
     /// xAI realtime voice model
     #[arg(long, env = "GROKBOT_XAI_MODEL", default_value = "grok-voice-latest")]
     pub model: String,

@@ -10,18 +10,23 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "grok_proto.h"
 #include "lwip/sockets.h"
+#include "mbedtls/md.h"
 #include "wifi_link.h"
 
 static const char *TAG = "brain_link";
 
 #define TX_QUEUE_DEPTH  24
 #define TX_MAX_PAYLOAD  700
+
+static const uint8_t AUTH_DOMAIN_BODY[] = "GB1-BODY";
+static const uint8_t AUTH_DOMAIN_BRAIN[] = "GB1-BRAIN";
 
 typedef struct {
     uint8_t msg_type;
@@ -36,6 +41,39 @@ static QueueHandle_t s_tx_queue;
 static volatile int s_sock = -1;
 static volatile bool s_connected;
 static bool s_started;
+
+static bool ct_memeq(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    uint8_t diff = 0;
+    for (size_t i = 0; i < n; ++i) {
+        diff |= (uint8_t)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+static bool compute_auth_mac(const char *token, const uint8_t *domain, size_t domain_len,
+                             const uint8_t nonce_brain[GROK_AUTH_NONCE_LEN],
+                             const uint8_t nonce_body[GROK_AUTH_NONCE_LEN],
+                             uint8_t out_mac[GROK_AUTH_HMAC_LEN])
+{
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info) {
+        return false;
+    }
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    bool ok = false;
+    if (mbedtls_md_setup(&ctx, info, 1) == 0 &&
+        mbedtls_md_hmac_starts(&ctx, (const unsigned char *)token, strlen(token)) == 0 &&
+        mbedtls_md_hmac_update(&ctx, domain, domain_len) == 0 &&
+        mbedtls_md_hmac_update(&ctx, nonce_brain, GROK_AUTH_NONCE_LEN) == 0 &&
+        mbedtls_md_hmac_update(&ctx, nonce_body, GROK_AUTH_NONCE_LEN) == 0 &&
+        mbedtls_md_hmac_finish(&ctx, out_mac) == 0) {
+        ok = true;
+    }
+    mbedtls_md_free(&ctx);
+    return ok;
+}
 
 static int sock_write(void *ctx, const uint8_t *buf, size_t len)
 {
@@ -106,6 +144,109 @@ static int connect_to_brain(const char *host, uint16_t port)
 
     freeaddrinfo(res);
     return fd;
+}
+
+/*
+ * Performs HELLO + mutual HMAC-SHA256 authentication before allowing any audio
+ * or face control traffic. Rejects rogue Brains that omit the challenge or fail
+ * HMAC verification when an auth token is configured.
+ */
+static bool perform_handshake(int fd, uint8_t *rx_buf)
+{
+    struct timeval rcv_to = {.tv_sec = 5, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_to, sizeof(rcv_to));
+
+    uint8_t hello[64];
+    size_t id_len = strlen(CONFIG_GROKBOT_DEVICE_ID);
+    if (id_len > sizeof(hello) - 4) {
+        id_len = sizeof(hello) - 4;
+    }
+    uint8_t caps = 0;
+    if (audio_pipeline_has_aec()) {
+        caps |= GROK_CAP_AEC;
+    }
+    if (audio_pipeline_has_wakeword()) {
+        caps |= GROK_CAP_WAKEWORD;
+    }
+    hello[0] = GROK_PROTO_VERSION;
+    hello[1] = (uint8_t)(CONFIG_GROKBOT_SAMPLE_RATE_HZ / 1000);
+    hello[2] = 1;
+    hello[3] = caps;
+    memcpy(hello + 4, CONFIG_GROKBOT_DEVICE_ID, id_len);
+
+    if (grok_proto_write_frame(sock_write, &fd, GROK_MSG_HELLO, 0, hello,
+                               (uint16_t)(4 + id_len)) != 0) {
+        return false;
+    }
+
+    grok_frame_hdr_t hdr;
+    if (grok_proto_read_frame(sock_read, &fd, &hdr, rx_buf, GROK_PROTO_MAX_PAYLOAD) != 0) {
+        ESP_LOGW(TAG, "Handshake failed: no reply to HELLO");
+        return false;
+    }
+
+    bool have_token = (s_settings.auth_token[0] != '\0');
+    if (hdr.msg_type == GROK_MSG_AUTH_CHALLENGE) {
+        if (!have_token) {
+            ESP_LOGE(TAG, "Brain requires pairing token, but GROKBOT_AUTH_TOKEN is not set");
+            return false;
+        }
+        if (hdr.len != GROK_AUTH_NONCE_LEN) {
+            ESP_LOGW(TAG, "Invalid AUTH_CHALLENGE length: %u", hdr.len);
+            return false;
+        }
+        uint8_t nonce_brain[GROK_AUTH_NONCE_LEN];
+        uint8_t nonce_body[GROK_AUTH_NONCE_LEN];
+        memcpy(nonce_brain, rx_buf, GROK_AUTH_NONCE_LEN);
+        esp_fill_random(nonce_body, GROK_AUTH_NONCE_LEN);
+
+        uint8_t auth_resp[GROK_AUTH_NONCE_LEN + GROK_AUTH_HMAC_LEN];
+        memcpy(auth_resp, nonce_body, GROK_AUTH_NONCE_LEN);
+        if (!compute_auth_mac(s_settings.auth_token, AUTH_DOMAIN_BODY, sizeof(AUTH_DOMAIN_BODY) - 1,
+                              nonce_brain, nonce_body, auth_resp + GROK_AUTH_NONCE_LEN)) {
+            ESP_LOGE(TAG, "HMAC computation failed");
+            return false;
+        }
+
+        if (grok_proto_write_frame(sock_write, &fd, GROK_MSG_AUTH_RESPONSE, 1, auth_resp,
+                                   sizeof(auth_resp)) != 0) {
+            return false;
+        }
+
+        if (grok_proto_read_frame(sock_read, &fd, &hdr, rx_buf, GROK_PROTO_MAX_PAYLOAD) != 0) {
+            ESP_LOGW(TAG, "Brain rejected AUTH_RESPONSE (check pairing token)");
+            return false;
+        }
+        if (hdr.msg_type != GROK_MSG_WELCOME || hdr.len != 2 + GROK_AUTH_HMAC_LEN) {
+            ESP_LOGW(TAG, "Unexpected WELCOME frame after auth (type=0x%02x, len=%u)",
+                     hdr.msg_type, hdr.len);
+            return false;
+        }
+
+        uint8_t expected_brain_mac[GROK_AUTH_HMAC_LEN];
+        if (!compute_auth_mac(s_settings.auth_token, AUTH_DOMAIN_BRAIN,
+                              sizeof(AUTH_DOMAIN_BRAIN) - 1, nonce_brain, nonce_body,
+                              expected_brain_mac) ||
+            !ct_memeq(expected_brain_mac, rx_buf + 2, GROK_AUTH_HMAC_LEN)) {
+            ESP_LOGE(TAG, "Brain HMAC verification failed (possible rogue Brain); rejecting");
+            return false;
+        }
+        ESP_LOGI(TAG, "Mutual HMAC-SHA256 authentication succeeded");
+    } else if (hdr.msg_type == GROK_MSG_WELCOME) {
+        if (have_token) {
+            ESP_LOGE(TAG, "Brain skipped auth challenge while pairing token is set; rejecting");
+            return false;
+        }
+        ESP_LOGW(TAG, "Connected without authentication (pairing token empty)");
+    } else {
+        ESP_LOGW(TAG, "Unexpected handshake frame 0x%02x", hdr.msg_type);
+        return false;
+    }
+
+    /* Clear handshake receive timeout for long-lived streaming socket. */
+    struct timeval no_to = {.tv_sec = 0, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &no_to, sizeof(no_to));
+    return true;
 }
 
 static void tx_task(void *arg)
@@ -184,35 +325,15 @@ static void rx_task(void *arg)
             continue;
         }
 
-        backoff_ms = 1000;
-        s_sock = fd;
-
-        /* Send HELLO immediately before accepting TX traffic. */
-        uint8_t hello[64];
-        size_t id_len = strlen(CONFIG_GROKBOT_DEVICE_ID);
-        if (id_len > sizeof(hello) - 4) {
-            id_len = sizeof(hello) - 4;
-        }
-        uint8_t caps = 0;
-        if (audio_pipeline_has_aec()) {
-            caps |= GROK_CAP_AEC;
-        }
-        if (audio_pipeline_has_wakeword()) {
-            caps |= GROK_CAP_WAKEWORD;
-        }
-        hello[0] = GROK_PROTO_VERSION;
-        hello[1] = (uint8_t)(CONFIG_GROKBOT_SAMPLE_RATE_HZ / 1000);
-        hello[2] = 1;
-        hello[3] = caps;
-        memcpy(hello + 4, CONFIG_GROKBOT_DEVICE_ID, id_len);
-
-        if (grok_proto_write_frame(sock_write, &fd, GROK_MSG_HELLO, 0, hello,
-                                   (uint16_t)(4 + id_len)) != 0) {
+        if (!perform_handshake(fd, rx_buf)) {
             close(fd);
-            s_sock = -1;
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            backoff_ms = (backoff_ms < 5000) ? backoff_ms + 1000 : 5000;
             continue;
         }
 
+        backoff_ms = 1000;
+        s_sock = fd;
         xQueueReset(s_tx_queue);
         s_connected = true;
         ESP_LOGI(TAG, "Connected to Brain %s:%u", host, port);
@@ -224,7 +345,6 @@ static void rx_task(void *arg)
         while (grok_proto_read_frame(sock_read, &fd, &hdr, rx_buf, GROK_PROTO_MAX_PAYLOAD) == 0) {
             switch (hdr.msg_type) {
             case GROK_MSG_WELCOME:
-                ESP_LOGI(TAG, "Brain WELCOME received");
                 break;
             case GROK_MSG_AUDIO_DOWN:
                 if (hdr.len >= 2 && s_cbs.on_audio_down) {

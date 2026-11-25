@@ -34,9 +34,11 @@ void settings_apply_kconfig_defaults(grokbot_settings_t *out)
     strncpy(out->wifi_ssid, CONFIG_GROKBOT_WIFI_SSID, sizeof(out->wifi_ssid) - 1);
     strncpy(out->wifi_password, CONFIG_GROKBOT_WIFI_PASSWORD, sizeof(out->wifi_password) - 1);
     strncpy(out->brain_host, CONFIG_GROKBOT_BRAIN_HOST, sizeof(out->brain_host) - 1);
+    strncpy(out->auth_token, CONFIG_GROKBOT_AUTH_TOKEN, sizeof(out->auth_token) - 1);
     trim_inplace(out->wifi_ssid);
     trim_inplace(out->wifi_password);
     trim_inplace(out->brain_host);
+    trim_inplace(out->auth_token);
     out->brain_port = (uint16_t)CONFIG_GROKBOT_BRAIN_PORT;
     out->volume = CONFIG_GROKBOT_DEFAULT_VOLUME;
     out->brightness = CONFIG_GROKBOT_DEFAULT_BRIGHTNESS;
@@ -74,9 +76,11 @@ esp_err_t settings_load(grokbot_settings_t *out)
     char ssid[33] = {0};
     char pass[65] = {0};
     char host[64] = {0};
+    char token[65] = {0};
     read_nvs_str(h, "wifi_ssid", ssid, sizeof(ssid));
     read_nvs_str(h, "wifi_pass", pass, sizeof(pass));
     read_nvs_str(h, "brain_host", host, sizeof(host));
+    read_nvs_str(h, "auth_tok", token, sizeof(token));
 
     uint16_t port = out->brain_port;
     int32_t volume = out->volume;
@@ -93,9 +97,13 @@ esp_err_t settings_load(grokbot_settings_t *out)
     if (host[0]) {
         strncpy(out->brain_host, host, sizeof(out->brain_host) - 1);
     }
+    if (token[0]) {
+        strncpy(out->auth_token, token, sizeof(out->auth_token) - 1);
+    }
     trim_inplace(out->wifi_ssid);
     trim_inplace(out->wifi_password);
     trim_inplace(out->brain_host);
+    trim_inplace(out->auth_token);
     out->brain_port = port ? port : (uint16_t)CONFIG_GROKBOT_BRAIN_PORT;
     out->volume = (int)volume;
     out->brightness = (int)brightness;
@@ -108,19 +116,22 @@ esp_err_t settings_save(const grokbot_settings_t *in)
     trim_inplace(clean.wifi_ssid);
     trim_inplace(clean.wifi_password);
     trim_inplace(clean.brain_host);
+    trim_inplace(clean.auth_token);
 
     nvs_handle_t h;
     ESP_RETURN_ON_ERROR(nvs_open(NS, NVS_READWRITE, &h), TAG, "nvs open rw");
     ESP_ERROR_CHECK(nvs_set_str(h, "wifi_ssid", clean.wifi_ssid));
     ESP_ERROR_CHECK(nvs_set_str(h, "wifi_pass", clean.wifi_password));
     ESP_ERROR_CHECK(nvs_set_str(h, "brain_host", clean.brain_host));
+    ESP_ERROR_CHECK(nvs_set_str(h, "auth_tok", clean.auth_token));
     ESP_ERROR_CHECK(nvs_set_u16(h, "brain_port", clean.brain_port));
     ESP_ERROR_CHECK(nvs_set_i32(h, "volume", clean.volume));
     ESP_ERROR_CHECK(nvs_set_i32(h, "brightness", clean.brightness));
     ESP_ERROR_CHECK(nvs_commit(h));
     nvs_close(h);
-    ESP_LOGI(TAG, "Settings saved (ssid=%s, brain=%s:%u)",
-             clean.wifi_ssid, clean.brain_host[0] ? clean.brain_host : "mdns", clean.brain_port);
+    ESP_LOGI(TAG, "Settings saved (ssid=%s, brain=%s:%u, auth=%s)",
+             clean.wifi_ssid, clean.brain_host[0] ? clean.brain_host : "mdns", clean.brain_port,
+             clean.auth_token[0] ? "paired" : "none");
     return ESP_OK;
 }
 

@@ -119,17 +119,38 @@ bytes (maximum 4096 bytes):
 | `0x04` | `BARGE_IN` | `[source: u8]` (interrupts active response and cancels xAI turn) |
 | `0x05` | `SLEEP` | Empty (pauses mic streaming; Brain keeps `conversation_id` for resumption) |
 | `0x06` | `PING` | `[seq: u32 LE]` |
+| `0x07` | `AUTH_RESPONSE` | `[nonce_body: 16 B][HMAC-SHA256(token, "GB1-BODY" \|\| nonce_brain \|\| nonce_body): 32 B]` |
 
 ### Brain to Body messages
 
 | Type | Name | Payload |
 | :--- | :--- | :--- |
-| `0x81` | `WELCOME` | `[proto_ver: u8, rate_khz: u8]` |
+| `0x81` | `WELCOME` | `[proto_ver: u8, rate_khz: u8]` + optional `[HMAC-SHA256(token, "GB1-BRAIN" \|\| nonce_brain \|\| nonce_body): 32 B]` |
 | `0x82` | `AUDIO_DOWN` | Raw 16 kHz mono 16-bit signed little-endian PCM (640 bytes / 20 ms) |
 | `0x83` | `FACE_STATE` | `[emotion: u8, energy: u8, yaw_nudge: i8, pitch_nudge: i8]` |
 | `0x84` | `STOP_AUDIO` | Empty (immediately flushes Body speaker ring buffer) |
 | `0x85` | `CONFIG` | `[volume: u8, brightness: u8]` (`0xFF` leaves a field unchanged) |
 | `0x86` | `PONG` | `[seq: u32 LE]` |
+| `0x87` | `AUTH_CHALLENGE` | `[nonce_brain: 16 B]` (fresh CSPRNG nonce per connection) |
+
+## Security model
+
+- **Mutual authentication:** When `GROKBOT_AUTH_TOKEN` is set (required by
+  default unless `--allow-unauthenticated` is passed), every connection
+  completes a 5-second-bounded mutual `HMAC-SHA256` handshake with fresh
+  16-byte CSPRNG nonces from both peers. Unauthenticated LAN clients cannot
+  trigger xAI usage, and a rogue mDNS advertiser cannot impersonate the Brain
+  or receive microphone audio.
+- **Connection hygiene:** Up to 4 concurrent handshakes are accepted to prevent
+  slowloris floods, and each newly authenticated Body cleanly supersedes any
+  stale previous connection.
+- **WPA2 SoftAP provisioning:** First-boot setup creates a WPA2-PSK access
+  point (`GrokBot-Setup`) protected by a random per-boot 8-digit PIN shown on
+  the display, plus a per-boot CSRF token validated on `POST /save`.
+- **Transcript privacy:** Voice transcripts are suppressed from `INFO` logs by
+  default and require `--log-transcripts` (`GROKBOT_LOG_TRANSCRIPTS=1`).
+- **Transport scope:** Body-to-Brain TCP traffic is mutually authenticated but
+  not TLS-encrypted; run on a trusted private LAN or VPN.
 
 ### Emotion values
 

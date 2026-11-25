@@ -23,6 +23,14 @@ menu "GrokBot Body Configuration"
         default 8765
         range 1024 65535
 
+    config GROKBOT_AUTH_TOKEN
+        string "Brain pairing token (HMAC-SHA256 mutual auth)"
+        default ""
+        help
+            Shared secret matching GROKBOT_AUTH_TOKEN on grokbot-brain.
+            Provides mutual HMAC-SHA256 authentication against rogue LAN clients
+            and rogue mDNS servers. Can also be configured via the SoftAP setup page.
+
     config GROKBOT_DEVICE_ID
         string "Device identifier sent to Brain in HELLO"
         default "vocat-desk"

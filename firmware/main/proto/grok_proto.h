@@ -12,6 +12,8 @@ extern "C" {
 #define GROK_PROTO_HEADER_LEN   6
 #define GROK_PROTO_MAX_PAYLOAD  4096
 #define GROK_PROTO_VERSION      1
+#define GROK_AUTH_NONCE_LEN     16
+#define GROK_AUTH_HMAC_LEN      32
 
 /* Body -> Brain */
 #define GROK_MSG_HELLO          0x01
@@ -20,6 +22,7 @@ extern "C" {
 #define GROK_MSG_BARGE_IN       0x04
 #define GROK_MSG_SLEEP          0x05
 #define GROK_MSG_PING           0x06
+#define GROK_MSG_AUTH_RESPONSE  0x07
 
 /* Brain -> Body */
 #define GROK_MSG_WELCOME        0x81
@@ -28,6 +31,7 @@ extern "C" {
 #define GROK_MSG_STOP_AUDIO     0x84
 #define GROK_MSG_CONFIG         0x85
 #define GROK_MSG_PONG           0x86
+#define GROK_MSG_AUTH_CHALLENGE 0x87
 
 #define GROK_WAKE_SRC_WAKEWORD  1
 #define GROK_WAKE_SRC_TOUCH     2

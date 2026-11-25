@@ -17,6 +17,10 @@ written in Rust on your desktop or LAN server:
   buffer run locally on the ESP32-S3 at 240 MHz.
 - **Zero secrets on the microcontroller:** Your `XAI_API_KEY` stays strictly on
   the Rust Brain host, never in flash or NVS on the ESP-VoCat.
+- **Mutual HMAC-SHA256 authentication and WPA2 setup:** Body and Brain perform a
+  per-connection challenge-response handshake (`GROKBOT_AUTH_TOKEN`) to block
+  unauthorized LAN clients and rogue mDNS servers. First-boot SoftAP setup uses
+  a random per-boot WPA2 PIN displayed on the screen plus a CSRF setup token.
 - **Low-latency binary streaming:** Body and Brain exchange 16 kHz mono PCM16
   audio and face cues over a lightweight framed binary protocol (`GB` v1) with
   automatic mDNS discovery (`_grokbot._tcp.local.`) and real-time 20 ms
@@ -59,22 +63,25 @@ troubleshooting steps.
 
 ### 1. Configure and start the Rust Brain
 
-Copy `secrets.env.example` to `secrets.env` (gitignored) and add your xAI API
-key:
+Copy `secrets.env.example` to `secrets.env` (gitignored), add your xAI API key,
+and generate a random pairing token (`GROKBOT_AUTH_TOKEN`):
 
 ```bash
 cp secrets.env.example secrets.env
-# Edit secrets.env and set XAI_API_KEY
+openssl rand -hex 24
+# Edit secrets.env: set XAI_API_KEY and GROKBOT_AUTH_TOKEN
 ./scripts/run_brain.sh
 ```
 
-`grokbot-brain` listens on `0.0.0.0:8765` and advertises
-`_grokbot._tcp.local.` via mDNS.
+`grokbot-brain` listens on `0.0.0.0:8765`, requires mutual HMAC-SHA256 pairing
+by default, and advertises `_grokbot._tcp.local.` via mDNS.
 
 ### 2. Build and flash the ESP-VoCat firmware
 
 With ESP-IDF 5.5.1+ installed at `~/esp/esp-idf` and the ESP-VoCat connected
-over USB-C (`/dev/ttyACM0`):
+over USB-C (`/dev/ttyACM0`), configure `GROKBOT_AUTH_TOKEN` in
+`idf.py menuconfig` (under **GrokBot Body Configuration**) or enter it during
+first-boot SoftAP setup, then build and flash:
 
 ```bash
 ./scripts/build_flash.sh
@@ -87,11 +94,24 @@ exit `idf.py monitor`).
 
 If Wi-Fi credentials are not saved in NVS or `menuconfig`:
 
-1. Connect to the `GrokBot-Setup` Wi-Fi access point.
-2. Open `http://192.168.4.1` and enter your Wi-Fi SSID and password (leave
-   Brain IP blank for mDNS auto-discovery).
+1. Connect to the `GrokBot-Setup` WPA2 access point using the random 8-digit
+   PIN displayed on the GrokBot screen.
+2. Open `http://192.168.4.1` and enter your Wi-Fi SSID, password, and
+   `GROKBOT_AUTH_TOKEN` (leave Brain IP blank for mDNS auto-discovery).
 3. Save and wait for GrokBot to reboot. The eyes flash happy once the Body
-   completes the handshake with `grokbot-brain`.
+   completes mutual authentication with `grokbot-brain`.
+
+## Security notes
+
+- `XAI_API_KEY` never leaves the Brain host.
+- Body and Brain mutually authenticate with `HMAC-SHA256` challenge-response on
+  every TCP connection; unauthenticated clients and rogue mDNS servers are
+  rejected before audio or xAI sessions start.
+- Voice transcripts are not logged at `INFO` level unless you opt in with
+  `--log-transcripts` (`GROKBOT_LOG_TRANSCRIPTS=1`).
+- Audio frames between Body and Brain travel over authenticated plaintext TCP
+  and are intended for a trusted private LAN or VPN (such as Tailscale or
+  WireGuard).
 
 ## Controls
 

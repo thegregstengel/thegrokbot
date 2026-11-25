@@ -311,6 +311,7 @@ dependencies = [
  "futures-util",
  "http",
  "mdns-sd",
+ "ring",
  "rustls",
  "serde_json",
  "thiserror",
