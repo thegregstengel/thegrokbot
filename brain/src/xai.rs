@@ -25,6 +25,7 @@ pub enum XaiEvent {
     AudioDelta(Vec<u8>),
     ResponseDone,
     UserTranscript(String),
+    AssistantTranscriptDelta(String),
     AssistantTranscript(String),
     Error(String),
     Disconnected,
@@ -237,7 +238,11 @@ fn parse_xai_json(text: &str, conversation_id: &mut Option<String>) -> Option<Xa
             .get("transcript")
             .and_then(|v| v.as_str())
             .map(|s| XaiEvent::UserTranscript(s.to_string())),
-        "response.output_audio_transcript.done" => root
+        "response.output_audio_transcript.delta" | "response.audio_transcript.delta" => root
+            .get("delta")
+            .and_then(|v| v.as_str())
+            .map(|s| XaiEvent::AssistantTranscriptDelta(s.to_string())),
+        "response.output_audio_transcript.done" | "response.audio_transcript.done" => root
             .get("transcript")
             .and_then(|v| v.as_str())
             .map(|s| XaiEvent::AssistantTranscript(s.to_string())),

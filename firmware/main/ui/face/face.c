@@ -28,7 +28,10 @@ typedef struct {
     spring_t right_scale;
     spring_t open;
     spring_t happy_arc;
+    spring_t right_happy_arc;
     spring_t top_lid;
+    spring_t left_top_lid;
+    spring_t bottom_lid;
     spring_t brow_tilt;
     spring_t glow;
     spring_t offset_y;
@@ -50,6 +53,7 @@ static volatile int8_t s_pitch_nudge;
 static float s_smooth_energy;
 static int64_t s_t0_us;
 static int64_t s_last_tick_us;
+static int64_t s_wink_start_us;
 static bool s_demo;
 
 /* Deterministic lightweight PRNG for natural saccades and blinks. */
@@ -98,7 +102,10 @@ static face_render_params_t target_for(face_emotion_t e)
         .right_scale = 1.0f,
         .open = 1.0f,
         .happy_arc = 0.0f,
+        .right_happy_arc = 0.0f,
         .top_lid = 0.0f,
+        .left_top_lid = 0.0f,
+        .bottom_lid = 0.0f,
         .brow_tilt = 0.0f,
         .glow = 0.40f,
         .offset_y = 0.0f,
@@ -171,6 +178,61 @@ static face_render_params_t target_for(face_emotion_t e)
         p.top_lid = 0.74f;
         p.glow = 0.12f;
         break;
+    case FACE_EMOTION_SURPRISED:
+        /* Wide, tall, glowing minimalist pills with a startled upward lift. */
+        p.yaw = 0.0f;
+        p.pitch = 0.12f;
+        p.roll = 0.0f;
+        p.eye_w = 0.142f;
+        p.eye_h = 0.254f;
+        p.sep = 0.296f;
+        p.open = 1.10f;
+        p.glow = 0.92f;
+        p.offset_y = -6.0f;
+        break;
+    case FACE_EMOTION_WINK:
+        /* Left pill open and warm; right eye curves into a cheeky ^ wink arch. */
+        p.yaw = 0.16f;
+        p.pitch = 0.16f;
+        p.roll = 0.22f;
+        p.eye_w = 0.122f;
+        p.eye_h = 0.224f;
+        p.sep = 0.282f;
+        p.right_happy_arc = 1.0f;
+        p.glow = 0.72f;
+        break;
+    case FACE_EMOTION_SKEPTICAL:
+        /* Flat half-lidded left eye paired with a wide raised right eye. */
+        p.yaw = -0.20f;
+        p.pitch = 0.14f;
+        p.roll = -0.14f;
+        p.sep = 0.282f;
+        p.right_scale = 1.12f;
+        p.left_top_lid = 0.46f;
+        p.glow = 0.42f;
+        break;
+    case FACE_EMOTION_EXCITED:
+        /* Radiant crescent-arch joy with extra glow and buoyant bounce. */
+        p.yaw = 0.04f;
+        p.pitch = 0.16f;
+        p.roll = 0.05f;
+        p.eye_w = 0.142f;
+        p.eye_h = 0.232f;
+        p.sep = 0.290f;
+        p.happy_arc = 0.80f;
+        p.glow = 0.95f;
+        break;
+    case FACE_EMOTION_AMUSED:
+        /* Warm EVE-style cheek-raised smiling pills with a sly head tilt. */
+        p.yaw = 0.26f;
+        p.pitch = 0.22f;
+        p.roll = 0.25f;
+        p.eye_w = 0.124f;
+        p.eye_h = 0.224f;
+        p.sep = 0.282f;
+        p.bottom_lid = 0.50f;
+        p.glow = 0.68f;
+        break;
     case FACE_EMOTION_IDLE:
     default:
         break;
@@ -190,7 +252,10 @@ static void init_springs(const face_render_params_t *p)
     spring_init(&s_sp.right_scale, p->right_scale);
     spring_init(&s_sp.open, p->open);
     spring_init(&s_sp.happy_arc, p->happy_arc);
+    spring_init(&s_sp.right_happy_arc, p->right_happy_arc);
     spring_init(&s_sp.top_lid, p->top_lid);
+    spring_init(&s_sp.left_top_lid, p->left_top_lid);
+    spring_init(&s_sp.bottom_lid, p->bottom_lid);
     spring_init(&s_sp.brow_tilt, p->brow_tilt);
     spring_init(&s_sp.glow, p->glow);
     spring_init(&s_sp.offset_y, p->offset_y);
@@ -198,7 +263,8 @@ static void init_springs(const face_render_params_t *p)
 
 static float eval_blink(float t_s, face_emotion_t emotion)
 {
-    if (emotion == FACE_EMOTION_HAPPY || emotion == FACE_EMOTION_SLEEPY) {
+    if (emotion == FACE_EMOTION_HAPPY || emotion == FACE_EMOTION_SLEEPY ||
+        emotion == FACE_EMOTION_WINK || emotion == FACE_EMOTION_EXCITED) {
         return 1.0f;
     }
 
@@ -248,7 +314,7 @@ static void update_saccades(float t_s, face_emotion_t emotion)
     }
 }
 
-/* Native LVGL timer (~30 fps): updates springs, renders dirty bbox, invalidates area. */
+/* Native LVGL timer (25 fps): updates springs, renders dirty bbox, invalidates area. */
 static void lv_anim_cb(lv_timer_t *timer)
 {
     (void)timer;
@@ -257,10 +323,10 @@ static void lv_anim_cb(lv_timer_t *timer)
     }
 
     int64_t now = esp_timer_get_time();
-    float dt = s_last_tick_us ? (now - s_last_tick_us) / 1000000.0f : 0.033f;
+    float dt = s_last_tick_us ? (now - s_last_tick_us) / 1000000.0f : 0.04f;
     s_last_tick_us = now;
     if (dt > 0.06f) {
-        dt = 0.033f;
+        dt = 0.04f;
     }
     float t_s = (now - s_t0_us) / 1000000.0f;
 
@@ -287,6 +353,31 @@ static void lv_anim_cb(lv_timer_t *timer)
         tgt.glow = 0.58f + 0.16f * sinf(t_s * 2.8f);
     } else if (emotion == FACE_EMOTION_SLEEPY) {
         tgt.offset_y = sinf(t_s * 1.4f) * 2.5f;
+    } else if (emotion == FACE_EMOTION_EXCITED) {
+        /* Buoyant joyful bounce + gentle rhythmic head sway. */
+        float e = s_smooth_energy;
+        tgt.offset_y = -fabsf(sinf(t_s * 6.5f)) * (7.0f + e * 4.0f);
+        tgt.roll += sinf(t_s * 6.5f) * 0.10f;
+    } else if (emotion == FACE_EMOTION_WINK) {
+        /* Crisp ~0.48 s one-shot wink that naturally reopens into a warm smirk. */
+        float wink_s = (now - s_wink_start_us) / 1000000.0f;
+        if (wink_s >= 0.48f) {
+            tgt.right_happy_arc = 0.0f;
+            tgt.bottom_lid = 0.36f;
+            tgt.roll = 0.14f;
+        }
+        if (s_smooth_energy > 0.04f) {
+            float e = s_smooth_energy;
+            tgt.eye_h *= (1.0f + e * 0.14f);
+            tgt.offset_y -= e * 6.5f;
+            tgt.glow = clampf(tgt.glow + e * 0.22f, 0.0f, 1.0f);
+        }
+    } else if (s_smooth_energy > 0.04f) {
+        /* Allow any mood expression (surprised, skeptical, amused) to bounce while speaking. */
+        float e = s_smooth_energy;
+        tgt.eye_h *= (1.0f + e * 0.14f);
+        tgt.offset_y -= e * 6.5f;
+        tgt.glow = clampf(tgt.glow + e * 0.22f, 0.0f, 1.0f);
     }
 
     /* Slightly underdamped springs give playful Pixar-like settle on gaze changes. */
@@ -299,7 +390,10 @@ static void lv_anim_cb(lv_timer_t *timer)
     spring_step(&s_sp.right_scale, tgt.right_scale, 110.0f, 17.0f, dt);
     spring_step(&s_sp.open, tgt.open, 140.0f, 20.0f, dt);
     spring_step(&s_sp.happy_arc, tgt.happy_arc, 120.0f, 18.0f, dt);
+    spring_step(&s_sp.right_happy_arc, tgt.right_happy_arc, 140.0f, 19.0f, dt);
     spring_step(&s_sp.top_lid, tgt.top_lid, 90.0f, 16.0f, dt);
+    spring_step(&s_sp.left_top_lid, tgt.left_top_lid, 110.0f, 17.0f, dt);
+    spring_step(&s_sp.bottom_lid, tgt.bottom_lid, 110.0f, 17.0f, dt);
     spring_step(&s_sp.brow_tilt, tgt.brow_tilt, 110.0f, 17.0f, dt);
     spring_step(&s_sp.glow, tgt.glow, 90.0f, 16.0f, dt);
     spring_step(&s_sp.offset_y, tgt.offset_y, 140.0f, 17.0f, dt);
@@ -316,7 +410,10 @@ static void lv_anim_cb(lv_timer_t *timer)
     cur.right_scale = s_sp.right_scale.val;
     cur.open = s_sp.open.val * blink;
     cur.happy_arc = clampf(s_sp.happy_arc.val, 0.0f, 1.0f);
+    cur.right_happy_arc = clampf(s_sp.right_happy_arc.val, 0.0f, 1.0f);
     cur.top_lid = clampf(s_sp.top_lid.val, 0.0f, 1.0f);
+    cur.left_top_lid = clampf(s_sp.left_top_lid.val, 0.0f, 1.0f);
+    cur.bottom_lid = clampf(s_sp.bottom_lid.val, 0.0f, 1.0f);
     cur.brow_tilt = clampf(s_sp.brow_tilt.val, -1.0f, 1.0f);
     cur.glow = clampf(s_sp.glow.val, 0.0f, 1.0f);
     cur.offset_y = s_sp.offset_y.val;
@@ -358,6 +455,7 @@ const char *face_emotion_name(face_emotion_t emotion)
     static const char *names[FACE_EMOTION_COUNT] = {
         "idle", "listening", "focusing", "thinking", "speaking",
         "happy", "curious", "concerned", "sleepy",
+        "surprised", "wink", "skeptical", "excited", "amused",
     };
     if (emotion < 0 || emotion >= FACE_EMOTION_COUNT) {
         return "unknown";
@@ -418,6 +516,9 @@ void face_set_state(face_emotion_t emotion, uint8_t energy, int8_t yaw_nudge, in
     s_yaw_nudge = yaw_nudge;
     s_pitch_nudge = pitch_nudge;
     if (prev != emotion) {
+        if (emotion == FACE_EMOTION_WINK) {
+            s_wink_start_us = esp_timer_get_time();
+        }
         ESP_LOGI(TAG, "emotion -> %s", face_emotion_name(emotion));
     }
 }

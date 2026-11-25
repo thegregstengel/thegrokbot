@@ -76,6 +76,11 @@ pub enum Emotion {
     Curious = 6,
     Concerned = 7,
     Sleepy = 8,
+    Surprised = 9,
+    Wink = 10,
+    Skeptical = 11,
+    Excited = 12,
+    Amused = 13,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

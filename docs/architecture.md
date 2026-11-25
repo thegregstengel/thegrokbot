@@ -165,3 +165,8 @@ bytes (maximum 4096 bytes):
 | `6` | `Curious` | Wide glancing eyes (for example, Wi-Fi setup mode) |
 | `7` | `Concerned` | Angled brows (network or upstream error) |
 | `8` | `Sleepy` | Heavy-lidded, nearly closed eyes |
+| `9` | `Surprised` | Wide, tall, glowing eyes with an upward lift |
+| `10` | `Wink` | Open left pill paired with a curved `^` right wink arch |
+| `11` | `Skeptical` | Flat half-lidded left eye with a wide raised right eye |
+| `12` | `Excited` | Radiant crescent-arch joy with a buoyant bounce and sway |
+| `13` | `Amused` | Cheek-lifted smiling pills with a playful head tilt |

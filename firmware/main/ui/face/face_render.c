@@ -188,18 +188,37 @@ static inline float eval_single_eye_sdf(float u, float v, float side, const face
 
     float d = sd_pill_fast(dx, dy, hw, hh);
 
-    if (p->happy_arc > 0.01f) {
+    float arch = p->happy_arc;
+    if (side > 0.0f && p->right_happy_arc > arch) {
+        arch = p->right_happy_arc;
+    }
+    if (arch > 0.01f) {
         float d_arch = sd_happy_arch_fast(dx, dy, hw);
-        d = d * (1.0f - p->happy_arc) + d_arch * p->happy_arc;
+        d = d * (1.0f - arch) + d_arch * arch;
     }
 
-    if (p->top_lid > 0.01f || fabsf(p->brow_tilt) > 0.01f) {
-        float lid_y = hh * (1.08f - 1.58f * p->top_lid);
+    float lid = p->top_lid;
+    if (side < 0.0f && p->left_top_lid > lid) {
+        lid = p->left_top_lid;
+    }
+    if (lid > 0.01f || fabsf(p->brow_tilt) > 0.01f) {
+        float lid_y = hh * (1.08f - 1.58f * lid);
         lid_y -= p->brow_tilt * (dx * side) * 0.52f;
         float d_lid = dy - lid_y;
         const float k = 0.034f;
         float h = clampf(0.5f + 0.5f * (d_lid - d) * (1.0f / k), 0.0f, 1.0f);
         d = (d * (1.0f - h) + d_lid * h) + k * h * (1.0f - h);
+    }
+
+    /* Soft curved lower cheek lift (EVE-style warm amused smile). */
+    if (p->bottom_lid > 0.01f) {
+        float norm_x = dx / (hw + 0.001f);
+        float cheek_curve = 0.22f * hh * (1.0f - norm_x * norm_x);
+        float bot_y = -hh * (1.12f - 1.38f * p->bottom_lid) + cheek_curve * p->bottom_lid;
+        float d_bot = bot_y - dy;
+        const float k = 0.038f;
+        float h = clampf(0.5f + 0.5f * (d_bot - d) * (1.0f / k), 0.0f, 1.0f);
+        d = (d * (1.0f - h) + d_bot * h) + k * h * (1.0f - h);
     }
 
     return d;

@@ -12,26 +12,29 @@ extern "C" {
 
 typedef struct {
     /* 3D head orientation on the unit sphere (radians). */
-    float yaw;         /* + look right */
-    float pitch;       /* + look up */
-    float roll;        /* + tilt CCW (\\ lean like reference) */
+    float yaw;             /* + look right */
+    float pitch;           /* + look up */
+    float roll;            /* + tilt CCW (\\ lean like reference) */
 
     /* Eye geometry in angular sphere units (radians). */
-    float sep;         /* Half angular separation between eyes (default ~0.275) */
-    float eye_w;       /* Half capsule width (default ~0.114) */
-    float eye_h;       /* Half capsule height (default ~0.222) */
-    float right_scale; /* Optional slight asymmetry (1.0 = equal) */
+    float sep;             /* Half angular separation between eyes (default ~0.275) */
+    float eye_w;           /* Half capsule width (default ~0.114) */
+    float eye_h;           /* Half capsule height (default ~0.222) */
+    float right_scale;     /* Optional slight asymmetry (1.0 = equal) */
 
     /* Expressive eyelid & shape modifiers (0.0 = neutral). */
-    float open;        /* 1.0 = fully open, 0.08 = closed blink */
-    float happy_arc;   /* 0..1: morphs pill into joyful ^ ^ arch */
-    float top_lid;     /* 0..1: sleepy/heavy upper eyelid drop */
-    float brow_tilt;   /* -1..+1: + = concerned (outer down) */
+    float open;            /* 1.0 = fully open, 0.08 = closed blink */
+    float happy_arc;       /* 0..1: morphs both pills into joyful ^ ^ arches */
+    float right_happy_arc; /* 0..1: morphs right pill only into a ^ wink arch */
+    float top_lid;         /* 0..1: symmetric sleepy/heavy upper eyelid drop */
+    float left_top_lid;    /* 0..1: asymmetric upper lid on left eye (skeptical) */
+    float bottom_lid;      /* 0..1: soft curved cheek raise from bottom (amused) */
+    float brow_tilt;       /* -1..+1: + = concerned (outer down) */
 
     /* Subtle visual polish. */
-    float glow;        /* 0..1: soft luminous aura around the eyes */
-    float offset_y;    /* Vertical bounce in pixels (+ = down) */
-    bool swap_rgb565;  /* Match panel endianness if not handled by flush cb */
+    float glow;            /* 0..1: soft luminous aura around the eyes */
+    float offset_y;        /* Vertical bounce in pixels (+ = down) */
+    bool swap_rgb565;      /* Match panel endianness if not handled by flush cb */
 } face_render_params_t;
 
 typedef struct {

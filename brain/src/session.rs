@@ -21,9 +21,243 @@ const INITIAL_PREFILL_FRAMES: usize = 6;
 const FRAME_PACE_US: u64 = 19_800;
 /// Maximum time allowed for HELLO + mutual HMAC-SHA256 handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Hold expressive post-speech reactions briefly before relaxing back to Listening.
+const EXPRESSION_HOLD_MS: u64 = 1200;
+/// Crisp duration of a one-shot wink before relaxing back to an amused smile or Listening.
+const WINK_DURATION_MS: u64 = 650;
+/// Hold Curious tilt briefly when Grok finishes a reply with a question.
+const QUESTION_HOLD_MS: u64 = 2500;
 
 const AUTH_DOMAIN_BODY: &[u8] = b"GB1-BODY";
 const AUTH_DOMAIN_BRAIN: &[u8] = b"GB1-BRAIN";
+
+fn contains_word(haystack: &str, word: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let wlen = word.len();
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(word) {
+        let abs = start + pos;
+        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+        let after = abs + wlen;
+        let after_ok = after == bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+/// Maps live assistant transcript cues to subtle GrokBot face expressions.
+/// Returns `None` for neutral speech so normal replies stay in `Emotion::Speaking`.
+pub fn infer_speaking_emotion(text: &str) -> Option<Emotion> {
+    let lower = text.to_lowercase();
+
+    // Playful wink cues (highest priority so punchlines land cleanly).
+    const WINK_PHRASES: &[&str] = &[
+        "just kidding",
+        "don't tell anyone",
+        "our little secret",
+        "between you and me",
+        "between us",
+        "if you know what i mean",
+        "trust me on this",
+        ";)",
+        "😉",
+    ];
+    if WINK_PHRASES.iter().any(|p| lower.contains(p)) || contains_word(&lower, "wink") {
+        return Some(Emotion::Wink);
+    }
+
+    // Surprise / astonishment cues.
+    const SURPRISED_PHRASES: &[&str] = &[
+        "no way",
+        "wait, what",
+        "wait what",
+        "plot twist",
+        "oh wow",
+        "mind blown",
+        "didn't see that coming",
+        "holy cow",
+        "what?!",
+        "really?!",
+    ];
+    const SURPRISED_WORDS: &[&str] = &["whoa", "woah", "unbelievable"];
+    if SURPRISED_PHRASES.iter().any(|p| lower.contains(p))
+        || SURPRISED_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return Some(Emotion::Surprised);
+    }
+
+    // High-energy celebration / excitement cues.
+    const EXCITED_PHRASES: &[&str] = &[
+        "let's go",
+        "heck yeah",
+        "hell yeah",
+        "so excited",
+        "can't wait",
+        "nailed it",
+        "awesome!",
+        "amazing!",
+        "fantastic!",
+        "incredible!",
+        "brilliant!",
+        "love that!",
+    ];
+    const EXCITED_WORDS: &[&str] = &["woohoo", "congratulations", "congrats"];
+    if EXCITED_PHRASES.iter().any(|p| lower.contains(p))
+        || EXCITED_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return Some(Emotion::Excited);
+    }
+
+    // Dry skepticism / raised-eyebrow doubt cues.
+    const SKEPTICAL_PHRASES: &[&str] = &[
+        "are you sure",
+        "doubt it",
+        "seriously?",
+        "really?",
+        "bold claim",
+        "not so sure",
+        "don't know about that",
+        "hard to believe",
+        "sounds sketchy",
+    ];
+    const SKEPTICAL_WORDS: &[&str] = &["hmm", "hmmm", "skeptical", "suspicious", "debatable"];
+    if SKEPTICAL_PHRASES.iter().any(|p| lower.contains(p))
+        || SKEPTICAL_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return Some(Emotion::Skeptical);
+    }
+
+    // Warm amusement / dry humor / chuckle cues.
+    const AMUSED_PHRASES: &[&str] = &["good one", "not bad", "gotta admit", "fair point"];
+    const AMUSED_WORDS: &[&str] = &[
+        "haha",
+        "hahaha",
+        "hehe",
+        "heh",
+        "lol",
+        "lmao",
+        "hilarious",
+        "funny",
+        "touché",
+        "touche",
+        "cheeky",
+        "ironic",
+    ];
+    if AMUSED_PHRASES.iter().any(|p| lower.contains(p))
+        || AMUSED_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return Some(Emotion::Amused);
+    }
+
+    // Warm cheer / gratitude cues.
+    const HAPPY_PHRASES: &[&str] = &[
+        "you're welcome",
+        "my pleasure",
+        "glad to help",
+        "happy to help",
+        "nice to meet you",
+    ];
+    if HAPPY_PHRASES.iter().any(|p| lower.contains(p)) {
+        return Some(Emotion::Happy);
+    }
+
+    // Empathy / apology / caution cues.
+    const CONCERNED_PHRASES: &[&str] = &[
+        "i'm sorry",
+        "so sorry",
+        "bad news",
+        "that's rough",
+        "that's tough",
+        "watch out",
+        "be careful",
+    ];
+    const CONCERNED_WORDS: &[&str] = &["unfortunately", "oof", "yikes"];
+    if CONCERNED_PHRASES.iter().any(|p| lower.contains(p))
+        || CONCERNED_WORDS.iter().any(|w| contains_word(&lower, w))
+    {
+        return Some(Emotion::Concerned);
+    }
+
+    None
+}
+
+/// Detects explicit user requests for GrokBot to make a specific facial expression
+/// (for example: "wink at me", "look skeptical", "act surprised", "give me a smirk").
+pub fn infer_user_expression_request(text: &str) -> Option<Emotion> {
+    let lower = text.to_lowercase();
+
+    // Direct gesture phrases that clearly command an expression on their own.
+    if contains_word(&lower, "wink") || contains_word(&lower, "winking") {
+        return Some(Emotion::Wink);
+    }
+    if contains_word(&lower, "smirk") {
+        return Some(Emotion::Amused);
+    }
+    if lower.contains("side eye")
+        || lower.contains("side-eye")
+        || lower.contains("raise an eyebrow")
+        || lower.contains("raise your eyebrow")
+    {
+        return Some(Emotion::Skeptical);
+    }
+    if lower.contains("smile for me")
+        || lower.contains("smile at me")
+        || lower.contains("give me a smile")
+    {
+        return Some(Emotion::Happy);
+    }
+
+    const REQUEST_CUES: &[&str] = &[
+        "look ",
+        "act ",
+        "be ",
+        "face",
+        "expression",
+        "show me",
+        "give me",
+        "can you",
+        "do a ",
+        "do your ",
+        "make a ",
+        "try ",
+    ];
+    if !REQUEST_CUES.iter().any(|cue| lower.contains(cue)) {
+        return None;
+    }
+
+    if contains_word(&lower, "surprised") || contains_word(&lower, "shocked") {
+        return Some(Emotion::Surprised);
+    }
+    if contains_word(&lower, "skeptical") || contains_word(&lower, "suspicious") {
+        return Some(Emotion::Skeptical);
+    }
+    if contains_word(&lower, "excited") {
+        return Some(Emotion::Excited);
+    }
+    if contains_word(&lower, "amused") || contains_word(&lower, "smug") {
+        return Some(Emotion::Amused);
+    }
+    if contains_word(&lower, "happy") || contains_word(&lower, "smile") {
+        return Some(Emotion::Happy);
+    }
+    if contains_word(&lower, "sleepy") || contains_word(&lower, "tired") {
+        return Some(Emotion::Sleepy);
+    }
+    if contains_word(&lower, "curious") {
+        return Some(Emotion::Curious);
+    }
+    if contains_word(&lower, "concerned")
+        || contains_word(&lower, "worried")
+        || contains_word(&lower, "sad")
+    {
+        return Some(Emotion::Concerned);
+    }
+
+    None
+}
 
 /// Performs strict HELLO + optional mutual HMAC-SHA256 challenge-response before any
 /// audio or xAI session is permitted.
@@ -213,6 +447,7 @@ where
     let mut awake = false;
     let mut speaking = false;
     let mut response_done_pending = false;
+    let mut response_done_seen = false;
     let mut prefill_remaining: usize = 0;
     let mut xai: Option<XaiSession> = None;
     let mut conversation_id: Option<String> = None;
@@ -223,6 +458,14 @@ where
     let mut mic_max_energy: u8 = 0;
     let mut last_mic_log_at = Instant::now();
     let mut audio_down_bytes: usize = 0;
+    let mut turn_transcript = String::new();
+    let mut speaking_emotion = Emotion::Speaking;
+    let mut requested_emotion: Option<Emotion> = None;
+    let mut turn_locked_emotion = false;
+    let mut pending_expression: Option<(Emotion, Instant)> = None;
+    let mut wink_release_at: Option<Instant> = None;
+    let mut wink_used_this_turn = false;
+    let mut post_speech_settle_at: Option<Instant> = None;
 
     let mut pace_tick = tokio::time::interval(Duration::from_micros(FRAME_PACE_US));
     pace_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -255,7 +498,16 @@ where
                         awake = true;
                         speaking = false;
                         response_done_pending = false;
+                        response_done_seen = false;
                         prefill_remaining = 0;
+                        turn_transcript.clear();
+                        speaking_emotion = Emotion::Speaking;
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        wink_used_this_turn = false;
+                        post_speech_settle_at = None;
                         chunker.clear();
                         play_queue.clear();
 
@@ -282,7 +534,16 @@ where
                         awake = true;
                         speaking = false;
                         response_done_pending = false;
+                        response_done_seen = false;
                         prefill_remaining = 0;
+                        turn_transcript.clear();
+                        speaking_emotion = Emotion::Speaking;
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        wink_used_this_turn = false;
+                        post_speech_settle_at = None;
                         chunker.clear();
                         play_queue.clear();
                         let _ = tx_body.send(BrainMessage::StopAudio).await;
@@ -297,7 +558,16 @@ where
                         awake = false;
                         speaking = false;
                         response_done_pending = false;
+                        response_done_seen = false;
                         prefill_remaining = 0;
+                        turn_transcript.clear();
+                        speaking_emotion = Emotion::Speaking;
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        wink_used_this_turn = false;
+                        post_speech_settle_at = None;
                         chunker.clear();
                         play_queue.clear();
                         let _ = tx_body.send(BrainMessage::StopAudio).await;
@@ -350,10 +620,19 @@ where
                     }
                     Some(XaiEvent::SpeechStarted) => {
                         info!(peer = %peer_label, "xAI VAD: speech started");
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        post_speech_settle_at = None;
+                        pending_expression = None;
+                        wink_release_at = None;
                         if speaking {
                             speaking = false;
                             response_done_pending = false;
+                            response_done_seen = false;
                             prefill_remaining = 0;
+                            turn_transcript.clear();
+                            speaking_emotion = Emotion::Speaking;
+                            wink_used_this_turn = false;
                             chunker.clear();
                             play_queue.clear();
                             let _ = tx_body.send(BrainMessage::StopAudio).await;
@@ -372,6 +651,14 @@ where
                         info!(peer = %peer_label, "xAI response started");
                         audio_down_bytes = 0;
                         response_done_pending = false;
+                        response_done_seen = false;
+                        turn_transcript.clear();
+                        speaking_emotion = Emotion::Speaking;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        wink_used_this_turn = false;
+                        post_speech_settle_at = None;
                         if awake && !speaking {
                             let _ = send_face(&tx_body, Emotion::Thinking, 0).await;
                         }
@@ -383,8 +670,20 @@ where
                         if !speaking {
                             speaking = true;
                             prefill_remaining = INITIAL_PREFILL_FRAMES;
+                            if let Some(req) = requested_emotion.take() {
+                                speaking_emotion = req;
+                                turn_locked_emotion = true;
+                                pending_expression = None;
+                                if req == Emotion::Wink {
+                                    wink_used_this_turn = true;
+                                    wink_release_at = Some(
+                                        Instant::now() + Duration::from_millis(WINK_DURATION_MS),
+                                    );
+                                }
+                                info!(peer = %peer_label, ?req, "applying user-requested expression");
+                            }
                             info!(peer = %peer_label, bytes = pcm.len(), "xAI audio playback started");
-                            let _ = send_face(&tx_body, Emotion::Speaking, 96).await;
+                            let _ = send_face(&tx_body, speaking_emotion, 96).await;
                         }
                         audio_down_bytes += pcm.len();
                         for frame in chunker.push(&pcm) {
@@ -401,6 +700,10 @@ where
                         }
                     }
                     Some(XaiEvent::ResponseDone) => {
+                        if response_done_seen {
+                            continue;
+                        }
+                        response_done_seen = true;
                         if let Some(tail) = chunker.flush() {
                             play_queue.push_back(tail);
                         }
@@ -413,21 +716,123 @@ where
                         if play_queue.is_empty() {
                             speaking = false;
                             response_done_pending = false;
+                            if let Some(req) = requested_emotion.take() {
+                                speaking_emotion = req;
+                            } else if let Some((emo, _)) = pending_expression.take() {
+                                speaking_emotion = emo;
+                            }
+                            wink_release_at = None;
                             if awake {
-                                let _ = send_face(&tx_body, Emotion::Listening, 0).await;
+                                post_speech_settle_at = settle_post_speech_face(
+                                    &tx_body,
+                                    speaking_emotion,
+                                    &turn_transcript,
+                                )
+                                .await;
                             }
                         } else {
                             response_done_pending = true;
                         }
                     }
                     Some(XaiEvent::UserTranscript(t)) => {
+                        if let Some(req) = infer_user_expression_request(&t) {
+                            if awake && speaking {
+                                speaking_emotion = req;
+                                turn_locked_emotion = true;
+                                pending_expression = None;
+                                if req == Emotion::Wink {
+                                    wink_used_this_turn = true;
+                                    wink_release_at = Some(
+                                        Instant::now() + Duration::from_millis(WINK_DURATION_MS),
+                                    );
+                                }
+                                info!(peer = %peer_label, ?req, "applying user-requested expression live");
+                                let _ = send_face(&tx_body, speaking_emotion, 96).await;
+                            } else {
+                                requested_emotion = Some(req);
+                                debug!(peer = %peer_label, ?req, "queued user-requested expression for reply");
+                            }
+                        }
                         if cfg.log_transcripts {
                             info!(peer = %peer_label, user = %t, "transcript");
                         } else {
                             debug!(peer = %peer_label, chars = t.len(), "user transcript received");
                         }
                     }
+                    Some(XaiEvent::AssistantTranscriptDelta(delta)) => {
+                        turn_transcript.push_str(&delta);
+                        if turn_locked_emotion {
+                            continue;
+                        }
+                        if let Some(detected) = infer_speaking_emotion(&turn_transcript) {
+                            if detected == Emotion::Wink && wink_used_this_turn {
+                                continue;
+                            }
+                            let already_scheduled = pending_expression
+                                .as_ref()
+                                .map(|(e, _)| *e == detected)
+                                .unwrap_or(false);
+                            let should_schedule = !already_scheduled
+                                && ((speaking_emotion == Emotion::Speaking
+                                    && pending_expression.is_none())
+                                    || (detected == Emotion::Wink
+                                        && speaking_emotion != Emotion::Wink));
+                            if should_schedule {
+                                // Sync expression timing with buffered playback frames so cues
+                                // land near the spoken phrase rather than several seconds early.
+                                let delay_ms = (play_queue
+                                    .len()
+                                    .saturating_sub(INITIAL_PREFILL_FRAMES)
+                                    as u64
+                                    * 18)
+                                    .min(8000);
+                                if delay_ms <= 120 {
+                                    speaking_emotion = detected;
+                                    if detected == Emotion::Wink {
+                                        wink_used_this_turn = true;
+                                        wink_release_at = Some(
+                                            Instant::now()
+                                                + Duration::from_millis(WINK_DURATION_MS),
+                                        );
+                                    }
+                                    debug!(peer = %peer_label, ?speaking_emotion, "live expression applied");
+                                    if awake && speaking {
+                                        let _ = send_face(&tx_body, speaking_emotion, 96).await;
+                                    }
+                                } else {
+                                    pending_expression = Some((
+                                        detected,
+                                        Instant::now() + Duration::from_millis(delay_ms),
+                                    ));
+                                    debug!(peer = %peer_label, ?detected, delay_ms, "scheduled playback-synced expression");
+                                }
+                            }
+                        }
+                    }
                     Some(XaiEvent::AssistantTranscript(t)) => {
+                        if turn_transcript.is_empty() {
+                            turn_transcript = t.clone();
+                        }
+                        if !turn_locked_emotion
+                            && speaking_emotion == Emotion::Speaking
+                            && pending_expression.is_none()
+                        {
+                            if let Some(detected) = infer_speaking_emotion(&t) {
+                                if !(detected == Emotion::Wink && wink_used_this_turn) {
+                                    speaking_emotion = detected;
+                                    if detected == Emotion::Wink {
+                                        wink_used_this_turn = true;
+                                        wink_release_at = Some(
+                                            Instant::now()
+                                                + Duration::from_millis(WINK_DURATION_MS),
+                                        );
+                                    }
+                                    if awake && speaking {
+                                        let _ = send_face(&tx_body, speaking_emotion, 96).await;
+                                    }
+                                }
+                            }
+                        }
                         if cfg.log_transcripts {
                             info!(peer = %peer_label, grok = %t, "transcript");
                         } else {
@@ -436,6 +841,11 @@ where
                     }
                     Some(XaiEvent::Error(err)) => {
                         error!(peer = %peer_label, %err, "xAI server error");
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        post_speech_settle_at = None;
                         let _ = send_face(&tx_body, Emotion::Concerned, 0).await;
                     }
                     Some(XaiEvent::Disconnected) | None => {
@@ -443,7 +853,16 @@ where
                         xai = None;
                         speaking = false;
                         response_done_pending = false;
+                        response_done_seen = false;
                         prefill_remaining = 0;
+                        turn_transcript.clear();
+                        speaking_emotion = Emotion::Speaking;
+                        requested_emotion = None;
+                        turn_locked_emotion = false;
+                        pending_expression = None;
+                        wink_release_at = None;
+                        wink_used_this_turn = false;
+                        post_speech_settle_at = None;
                         chunker.clear();
                         play_queue.clear();
                         if awake {
@@ -454,11 +873,64 @@ where
                 }
             }
 
+            _ = async {
+                match pending_expression {
+                    Some((_, deadline)) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                    }
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some((emo, _)) = pending_expression.take() {
+                    if awake && speaking {
+                        speaking_emotion = emo;
+                        if emo == Emotion::Wink {
+                            wink_used_this_turn = true;
+                            wink_release_at =
+                                Some(Instant::now() + Duration::from_millis(WINK_DURATION_MS));
+                        }
+                        debug!(peer = %peer_label, ?speaking_emotion, "playback-synced expression fired");
+                        let _ = send_face(&tx_body, speaking_emotion, 96).await;
+                    }
+                }
+            }
+
+            _ = async {
+                match wink_release_at {
+                    Some(deadline) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                    }
+                    None => std::future::pending().await,
+                }
+            } => {
+                wink_release_at = None;
+                if speaking_emotion == Emotion::Wink {
+                    speaking_emotion = Emotion::Amused;
+                    if awake && speaking {
+                        let _ = send_face(&tx_body, speaking_emotion, 80).await;
+                    }
+                }
+            }
+
+            _ = async {
+                match post_speech_settle_at {
+                    Some(deadline) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                    }
+                    None => std::future::pending().await,
+                }
+            } => {
+                post_speech_settle_at = None;
+                if awake && !speaking {
+                    let _ = send_face(&tx_body, Emotion::Listening, 0).await;
+                }
+            }
+
             _ = pace_tick.tick(), if !play_queue.is_empty() => {
                 if let Some(frame) = play_queue.pop_front() {
                     if last_face_energy_at.elapsed() >= Duration::from_millis(50) {
                         let energy = pcm16_energy(&frame);
-                        let _ = send_face(&tx_body, Emotion::Speaking, energy).await;
+                        let _ = send_face(&tx_body, speaking_emotion, energy).await;
                         last_face_energy_at = Instant::now();
                     }
                     let _ = tx_body.send(BrainMessage::AudioDown(frame)).await;
@@ -466,8 +938,17 @@ where
                 if play_queue.is_empty() && response_done_pending {
                     speaking = false;
                     response_done_pending = false;
+                    if let Some((emo, _)) = pending_expression.take() {
+                        speaking_emotion = emo;
+                    }
+                    wink_release_at = None;
                     if awake {
-                        let _ = send_face(&tx_body, Emotion::Listening, 0).await;
+                        post_speech_settle_at = settle_post_speech_face(
+                            &tx_body,
+                            speaking_emotion,
+                            &turn_transcript,
+                        )
+                        .await;
                     }
                 }
             }
@@ -482,6 +963,27 @@ where
     let _ = writer_task.await;
     info!(peer = %peer_label, "ESP-VoCat Body disconnected");
     Ok(())
+}
+
+async fn settle_post_speech_face(
+    tx: &mpsc::Sender<BrainMessage>,
+    speaking_emotion: Emotion,
+    turn_transcript: &str,
+) -> Option<Instant> {
+    if speaking_emotion == Emotion::Wink {
+        let _ = send_face(tx, Emotion::Wink, 0).await;
+        return Some(Instant::now() + Duration::from_millis(WINK_DURATION_MS));
+    }
+    if speaking_emotion != Emotion::Speaking {
+        let _ = send_face(tx, speaking_emotion, 0).await;
+        return Some(Instant::now() + Duration::from_millis(EXPRESSION_HOLD_MS));
+    }
+    if turn_transcript.trim_end().ends_with('?') {
+        let _ = send_face(tx, Emotion::Curious, 0).await;
+        return Some(Instant::now() + Duration::from_millis(QUESTION_HOLD_MS));
+    }
+    let _ = send_face(tx, Emotion::Listening, 0).await;
+    None
 }
 
 async fn send_face(tx: &mpsc::Sender<BrainMessage>, emotion: Emotion, energy: u8) -> Result<()> {
@@ -642,5 +1144,91 @@ mod tests {
 
         let res = server_task.await.unwrap();
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn infer_speaking_emotion_detects_new_expressions() {
+        assert_eq!(
+            infer_speaking_emotion("Just kidding, don't tell anyone."),
+            Some(Emotion::Wink)
+        );
+        assert_eq!(
+            infer_speaking_emotion("Whoa, no way! I didn't see that coming."),
+            Some(Emotion::Surprised)
+        );
+        assert_eq!(
+            infer_speaking_emotion("Let's go! You nailed it!"),
+            Some(Emotion::Excited)
+        );
+        assert_eq!(
+            infer_speaking_emotion("Hmm, are you sure about that?"),
+            Some(Emotion::Skeptical)
+        );
+        assert_eq!(
+            infer_speaking_emotion("Haha, fair point, that's a good one."),
+            Some(Emotion::Amused)
+        );
+        assert_eq!(
+            infer_speaking_emotion("You're welcome, happy to help."),
+            Some(Emotion::Happy)
+        );
+        assert_eq!(
+            infer_speaking_emotion("I'm sorry, unfortunately that failed."),
+            Some(Emotion::Concerned)
+        );
+        // Neutral text and substring false positives stay in default Speaking.
+        assert_eq!(
+            infer_speaking_emotion("The stars twinkle quietly above the horizon."),
+            None
+        );
+        assert_eq!(
+            infer_speaking_emotion("It is currently 68 degrees and sunny."),
+            None
+        );
+    }
+
+    #[test]
+    fn infer_user_expression_request_matches_commands_without_false_positives() {
+        assert_eq!(
+            infer_user_expression_request("Wink at me!"),
+            Some(Emotion::Wink)
+        );
+        assert_eq!(
+            infer_user_expression_request("Can you give me a skeptical look?"),
+            Some(Emotion::Skeptical)
+        );
+        assert_eq!(
+            infer_user_expression_request("Give me the side eye."),
+            Some(Emotion::Skeptical)
+        );
+        assert_eq!(
+            infer_user_expression_request("Act surprised!"),
+            Some(Emotion::Surprised)
+        );
+        assert_eq!(
+            infer_user_expression_request("Show me your excited face."),
+            Some(Emotion::Excited)
+        );
+        assert_eq!(
+            infer_user_expression_request("Give me a smirk."),
+            Some(Emotion::Amused)
+        );
+        assert_eq!(
+            infer_user_expression_request("Smile for me!"),
+            Some(Emotion::Happy)
+        );
+        assert_eq!(
+            infer_user_expression_request("Look sleepy."),
+            Some(Emotion::Sleepy)
+        );
+        // Normal conversation mentioning emotions should not hijack the face.
+        assert_eq!(
+            infer_user_expression_request("I am surprised it rained today."),
+            None
+        );
+        assert_eq!(
+            infer_user_expression_request("Are you excited for Friday?"),
+            None
+        );
     }
 }
