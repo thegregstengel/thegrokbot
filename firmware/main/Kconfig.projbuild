@@ -1,0 +1,64 @@
+menu "GrokBot Body Configuration"
+
+    config GROKBOT_WIFI_SSID
+        string "Wi-Fi SSID (optional; leave empty for SoftAP provision)"
+        default ""
+        help
+            Home Wi-Fi SSID. If empty and nothing is stored in NVS, the device
+            starts a SoftAP named GrokBot-Setup for Wi-Fi provisioning.
+
+    config GROKBOT_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config GROKBOT_BRAIN_HOST
+        string "Brain host IP or hostname (empty = auto-discover via mDNS)"
+        default ""
+        help
+            IP address or hostname running grokbot-brain on your LAN.
+            Leave empty to auto-discover _grokbot._tcp.local via mDNS.
+
+    config GROKBOT_BRAIN_PORT
+        int "Brain TCP port"
+        default 8765
+        range 1024 65535
+
+    config GROKBOT_DEVICE_ID
+        string "Device identifier sent to Brain in HELLO"
+        default "vocat-desk"
+
+    config GROKBOT_USE_ESP_SR
+        bool "Enable ESP-SR local WakeNet + hardware AEC + VAD"
+        default y
+        help
+            Uses ESP-VoCat's ES7210 MIC1 + MIC3 hardware speaker loopback for
+            Acoustic Echo Cancellation, noise suppression, and local wake word.
+            Disable for minimal bring-up without the model flash partition.
+
+    config GROKBOT_SAMPLE_RATE_HZ
+        int "PCM sample rate for mic and speaker"
+        default 16000
+        range 8000 16000
+
+    config GROKBOT_DEFAULT_VOLUME
+        int "Default speaker volume percent"
+        default 75
+        range 0 100
+
+    config GROKBOT_DEFAULT_BRIGHTNESS
+        int "Default backlight brightness percent"
+        default 80
+        range 10 100
+
+    config GROKBOT_FOLLOWUP_TIMEOUT_MS
+        int "Auto-sleep timeout after inactivity (ms)"
+        default 25000
+        range 5000 120000
+
+    config GROKBOT_DEMO_FACE_ONLY
+        bool "Face-only demo (skip Wi-Fi and Brain)"
+        default n
+        help
+            Cycle face emotions without networking. Useful for first display test.
+
+endmenu

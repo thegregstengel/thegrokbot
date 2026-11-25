@@ -1,0 +1,26 @@
+# Rust Brain
+brain/target/
+
+# ESP-IDF / build
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+firmware/managed_components/
+*.pyc
+__pycache__/
+
+# Secrets
+secrets.env
+*.pem
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Local tool caches
+.cache/

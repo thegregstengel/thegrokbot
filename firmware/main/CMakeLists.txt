@@ -1,0 +1,32 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "board/board.c"
+        "proto/grok_proto.c"
+        "audio/audio_pipeline.c"
+        "ui/face/face.c"
+        "ui/face/face_render.c"
+        "ui/touch_controls.c"
+        "net/settings_store.c"
+        "net/wifi_link.c"
+        "net/brain_link.c"
+        "body/body_fsm.c"
+    INCLUDE_DIRS
+        "."
+        "board"
+        "proto"
+        "audio"
+        "ui"
+        "ui/face"
+        "net"
+        "body"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        esp_timer
+        mdns
+        lwip
+)
